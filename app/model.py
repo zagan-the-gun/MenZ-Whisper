@@ -150,6 +150,8 @@ class WhisperModel:
     
     def _transcribe_faster_whisper(self, audio: np.ndarray) -> str:
         """faster-whisperで音声認識"""
+        original_duration = len(audio) / 16000.0  # 元の音声長
+        
         segments, info = self.model.transcribe(
             audio,
             language=self.config.language,
@@ -166,11 +168,45 @@ class WhisperModel:
             temperature=self.config.temperature if self.config.temperature > 0 else 0,
         )
         
+        # セグメントをリスト化（検証のため）
+        segment_list = list(segments)
+        
+        # VADで全削除された場合は空文字を返す（ハルシネーション対策）
+        if len(segment_list) == 0:
+            if self.config.show_debug:
+                self.logger.debug("VADで全セグメント削除（無音と判定）")
+            return ""
+        
+        # VADで大部分が削除された場合もスキップ（ハルシネーション対策）
+        # info.duration_after_vad は faster-whisper 1.0+ で利用可能
+        try:
+            if hasattr(info, 'duration_after_vad') and info.duration_after_vad is not None:
+                vad_duration = info.duration_after_vad
+                if original_duration > 0.5 and vad_duration < 0.3:
+                    # 元が0.5秒以上あるのにVAD後が0.3秒未満 → ほぼ無音
+                    if self.config.show_debug:
+                        self.logger.debug(f"VADで大部分削除（{original_duration:.2f}s → {vad_duration:.2f}s）")
+                    return ""
+        except Exception:
+            pass
+        
         # セグメントを結合
-        text = " ".join([segment.text for segment in segments]).strip()
+        text = " ".join([segment.text for segment in segment_list]).strip()
+        
+        # ループ検出（同じフレーズが3回以上繰り返されている）
+        if text and len(text) > 50:
+            # 最初の20文字を取得
+            first_phrase = text[:20]
+            # 全体に何回出現するか
+            count = text.count(first_phrase)
+            if count >= 3:
+                if self.config.show_debug:
+                    self.logger.warning(f"ハルシネーション検出（ループ）: {first_phrase}... が{count}回繰り返し")
+                return ""
         
         if self.config.show_debug:
             self.logger.debug(f"認識言語: {info.language} (確率: {info.language_probability:.2f})")
+            self.logger.debug(f"セグメント数: {len(segment_list)}")
         
         return text
     

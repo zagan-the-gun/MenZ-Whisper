@@ -107,6 +107,10 @@ class JSONRPCHandler:
         
         self.logger.info(f"音声認識リクエスト受信: speaker={speaker}, sample_rate={sample_rate}")
         
+        # 処理時間計測開始
+        import time
+        start_time = time.time()
+        
         try:
             # Base64デコード
             pcm_bytes = base64.b64decode(audio_data_b64)
@@ -147,7 +151,10 @@ class JSONRPCHandler:
             # 末尾の句読点を削除
             processed_result = processed_result.rstrip('。')
             
-            self.logger.info(f"認識成功: speaker={speaker}, text={processed_result}")
+            # 処理時間計測
+            elapsed_time = time.time() - start_time
+            
+            self.logger.info(f"認識成功: speaker={speaker}, text={processed_result}, 処理時間={elapsed_time:.2f}秒")
             
             # 通知メッセージを構築
             notification = {

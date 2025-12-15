@@ -66,8 +66,8 @@ class MCPClient:
                     async with websockets.connect(
                         uri,
                         max_size=None,
-                        ping_interval=20,
-                        ping_timeout=10
+                        ping_interval=30,
+                        ping_timeout=60
                     ) as websocket:
                         self.websocket = websocket
                         self.stats['last_connected'] = time.time()
