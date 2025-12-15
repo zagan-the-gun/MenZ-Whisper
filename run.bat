@@ -1,5 +1,10 @@
 @echo off
+chcp 65001 > nul
 REM MenZ-Whisper 実行スクリプト（Windows）
+
+REM Python UTF-8エンコーディング設定
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 
 REM 仮想環境をアクティベート
 if exist "venv\Scripts\activate.bat" (
