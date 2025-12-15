@@ -49,7 +49,7 @@ set /p GPU="Choice: "
 
 if /i "%GPU%"=="y" (
     echo.
-    echo Installing PyTorch with CUDA (this may take several minutes)...
+    echo Installing PyTorch with CUDA ^(this may take several minutes^)...
     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
     if errorlevel 1 (
         echo.
@@ -71,7 +71,7 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" 
 REM 依存関係のインストール（PyTorchは既にインストール済み）
 echo.
 echo 依存関係をインストール中...
-echo （PyTorchは既にインストール済みのためスキップされます）
+echo ^(PyTorchは既にインストール済みのためスキップされます^)
 pip install openai-whisper faster-whisper silero-vad
 pip install numpy soundfile librosa sounddevice websockets tqdm
 
