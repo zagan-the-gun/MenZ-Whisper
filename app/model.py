@@ -107,14 +107,38 @@ class WhisperModel:
             compute_type = "int8"  # CPUではfloat16は使えない
             self.logger.info(f"CPU使用のため compute_type を {compute_type} に変更")
         
+        # GPU IDの設定と検証
+        device_index = 0
+        if device == "cuda":
+            import torch
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA設定ですがGPUが利用できません")
+            
+            gpu_count = torch.cuda.device_count()
+            gpu_id = self.config.gpu_id
+            
+            if gpu_id == "auto":
+                device_index = 0
+            else:
+                try:
+                    device_index = int(gpu_id)
+                    if device_index >= gpu_count or device_index < 0:
+                        raise ValueError(f"GPU ID {device_index} は存在しません（利用可能: 0-{gpu_count-1}）")
+                except ValueError as e:
+                    raise ValueError(f"無効なGPU ID設定: {gpu_id} - {e}")
+        
         # モデルロード
         self.model = FasterWhisperModel(
             model_size,
             device=device,
+            device_index=device_index if device == "cuda" else 0,
             compute_type=compute_type,
             download_root=str(cache_dir),
             cpu_threads=self.config.cpu_threads if device == "cpu" else 0
         )
+        
+        # 実際に使用されているデバイスを表示
+        self._log_device_info(device, device_index)
     
     def _load_openai_whisper(self, model_size: str, device: str):
         """OpenAI Whisperモデルをロード"""
@@ -128,6 +152,30 @@ class WhisperModel:
             device=device,
             download_root=str(cache_dir)
         )
+        
+        # 実際に使用されているデバイスを表示
+        self._log_device_info(device, 0)
+    
+    def _log_device_info(self, device: str, device_index: int):
+        """実際に使用されているデバイス情報を表示"""
+        if device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    # 実際に使用されているGPUを取得
+                    current_device = torch.cuda.current_device()
+                    gpu_name = torch.cuda.get_device_name(current_device)
+                    gpu_props = torch.cuda.get_device_properties(current_device)
+                    gpu_memory_gb = gpu_props.total_memory / (1024**3)
+                    self.logger.info(f"使用GPU: GPU {current_device} - {gpu_name} ({gpu_memory_gb:.1f}GB)")
+                else:
+                    self.logger.warning("CUDA使用設定ですがGPUが利用できません")
+            except Exception as e:
+                self.logger.warning(f"GPU情報の取得に失敗: {e}")
+        elif device == "mps":
+            self.logger.info("使用デバイス: Apple Metal (MPS)")
+        else:
+            self.logger.info("使用デバイス: CPU")
     
     def transcribe_audio_segment(self, audio: np.ndarray) -> str:
         """
