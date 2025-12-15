@@ -42,10 +42,38 @@ echo.
 echo pipをアップグレード中...
 python -m pip install --upgrade pip setuptools wheel
 
-REM 依存関係のインストール
+REM GPU選択
+echo.
+echo GPU support? (y/n)
+set /p GPU="Choice: "
+
+if /i "%GPU%"=="y" (
+    echo.
+    echo Installing PyTorch with CUDA (this may take several minutes)...
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    if errorlevel 1 (
+        echo.
+        echo WARNING: CUDA installation failed, using CPU version...
+        pip install torch torchvision torchaudio
+    )
+) else (
+    echo.
+    echo Installing PyTorch CPU version...
+    pip install torch torchvision torchaudio
+)
+
+REM PyTorchバージョン確認
+echo.
+echo Verifying PyTorch installation...
+python -c "import torch; print(f'PyTorch {torch.__version__} installed')"
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" 2>nul
+
+REM 依存関係のインストール（PyTorchは既にインストール済み）
 echo.
 echo 依存関係をインストール中...
-pip install -r requirements.txt
+echo （PyTorchは既にインストール済みのためスキップされます）
+pip install openai-whisper faster-whisper silero-vad
+pip install numpy soundfile librosa sounddevice websockets tqdm
 
 REM 必要なディレクトリの作成
 echo.
