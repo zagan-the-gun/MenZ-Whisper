@@ -68,18 +68,12 @@ echo Verifying PyTorch installation...
 python -c "import torch; print(f'PyTorch {torch.__version__} installed')"
 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" 2>nul
 
-REM 依存関係のインストール（PyTorchは既にインストール済み）
+REM 依存関係のインストール
 echo.
 echo 依存関係をインストール中...
-echo ^(PyTorchは既にインストール済みのためスキップされます^)
-pip install numpy soundfile librosa sounddevice websockets tqdm
-pip install openai-whisper faster-whisper
+pip install -r requirements.txt
 
-REM Silero VADのインストールとモデルダウンロード
-echo.
-echo Silero VADをインストール中...
-pip install silero-vad
-
+REM Silero VADモデルをダウンロード
 echo.
 echo Silero VADモデルをダウンロード中...
 echo ^(初回実行時はモデルファイルのダウンロードが必要です^)

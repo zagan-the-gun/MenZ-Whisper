@@ -10,8 +10,7 @@ numpy>=1.24.0
 
 # 深層学習フレームワーク
 # PyTorch（CUDA/MPS/CPU自動対応）
-torch>=2.0.0
-torchaudio>=2.0.0
+# Note: torchとtorchaudioはsetup.batでGPU/CPU選択後にインストールされます
 
 # Whisper音声認識（いずれか1つ、または両方）
 # オプション1: OpenAI Whisper（標準版）
