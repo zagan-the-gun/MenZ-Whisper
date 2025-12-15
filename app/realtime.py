@@ -39,13 +39,17 @@ class RealtimeTranscriber:
         
         # Silero VAD設定
         try:
-            from silero_vad import load_silero_vad, get_speech_timestamps
-            self.vad_model = load_silero_vad()
-            self.get_speech_timestamps = get_speech_timestamps
+            import torch
+            # torch.hubから直接ロード（日本語パス対応）
+            self.vad_model, _ = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                trust_repo=True
+            )
             self.vad_available = True
             self.logger.info(f"Silero VAD初期化完了")
-        except ImportError:
-            self.logger.warning("silero-vad が見つかりません。VADなしで動作します。")
+        except Exception as e:
+            self.logger.warning(f"Silero VADの初期化に失敗しました。VADなしで動作します。")
             self.vad_available = False
         
         self.frame_duration = self.config.frame_duration_ms  # ms
