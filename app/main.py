@@ -248,6 +248,24 @@ async def main():
         model = WhisperModel(config)
         logger.info("モデルのロードが完了しました")
         
+        # GPU情報の表示
+        if config.device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    if config.gpu_id == "auto":
+                        gpu_id = 0
+                        logger.info(f"GPU ID: auto (使用中: GPU {gpu_id})")
+                    else:
+                        gpu_id = int(config.gpu_id)
+                        logger.info(f"GPU ID: {gpu_id}")
+                    
+                    gpu_name = torch.cuda.get_device_name(gpu_id)
+                    gpu_memory = torch.cuda.get_device_properties(gpu_id).total_memory / (1024**3)
+                    logger.info(f"使用GPU: {gpu_name} (メモリ: {gpu_memory:.1f}GB)")
+            except Exception as e:
+                logger.debug(f"GPU情報の取得に失敗: {e}")
+        
         try:
             # モード別の処理
             if mode == 'network':
