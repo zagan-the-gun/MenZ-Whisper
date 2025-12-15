@@ -75,6 +75,18 @@ echo ^(PyTorchは既にインストール済みのためスキップされます
 pip install openai-whisper faster-whisper silero-vad
 pip install numpy soundfile librosa sounddevice websockets tqdm
 
+REM Silero VADの検証と修正
+echo.
+echo Verifying Silero VAD installation...
+python -c "import torch; model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True); print('Silero VAD verified successfully')"
+if errorlevel 1 (
+    echo WARNING: Silero VAD verification failed
+    echo Attempting to fix Silero VAD...
+    pip uninstall -y silero-vad
+    pip install --no-cache-dir silero-vad
+    python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, force_reload=True)"
+)
+
 REM 必要なディレクトリの作成
 echo.
 echo 必要なディレクトリを作成中...
