@@ -115,7 +115,13 @@ class JSONRPCHandler:
             pcm16 = np.frombuffer(pcm_bytes, dtype=np.int16)
             audio_f32 = pcm16.astype(np.float32) / 32767.0
             
-            self.logger.debug(f"音声データ変換完了: samples={len(audio_f32)}, duration={len(audio_f32)/sample_rate:.2f}s")
+            duration = len(audio_f32) / sample_rate
+            self.logger.debug(f"音声データ変換完了: samples={len(audio_f32)}, duration={duration:.2f}s")
+            
+            # 短すぎる音声を無視（ハルシネーション対策）
+            if duration < 0.5:
+                self.logger.info(f"音声が短すぎるためスキップ: speaker={speaker}, duration={duration:.2f}s")
+                return None
             
             # 音声認識実行
             result = self.model.transcribe_audio_segment(audio_f32)
