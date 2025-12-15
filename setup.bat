@@ -72,19 +72,25 @@ REM 依存関係のインストール（PyTorchは既にインストール済み
 echo.
 echo 依存関係をインストール中...
 echo ^(PyTorchは既にインストール済みのためスキップされます^)
-pip install openai-whisper faster-whisper silero-vad
 pip install numpy soundfile librosa sounddevice websockets tqdm
+pip install openai-whisper faster-whisper
 
-REM Silero VADの検証と修正
+REM Silero VADのインストールとモデルダウンロード
 echo.
-echo Verifying Silero VAD installation...
-python -c "import torch; model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True); print('Silero VAD verified successfully')"
+echo Silero VADをインストール中...
+pip install silero-vad
+
+echo.
+echo Silero VADモデルをダウンロード中...
+echo ^(初回実行時はモデルファイルのダウンロードが必要です^)
+python -c "import torch; model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, force_reload=True); print('Silero VAD installation completed successfully')"
 if errorlevel 1 (
-    echo WARNING: Silero VAD verification failed
-    echo Attempting to fix Silero VAD...
-    pip uninstall -y silero-vad
-    pip install --no-cache-dir silero-vad
-    python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, force_reload=True)"
+    echo.
+    echo ERROR: Silero VADのセットアップに失敗しました
+    echo 手動で以下のコマンドを実行してください:
+    echo   python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, force_reload=True)"
+    pause
+    exit /b 1
 )
 
 REM 必要なディレクトリの作成
