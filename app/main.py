@@ -110,19 +110,39 @@ async def run_network_mode(config, model):
         logger.info("シャットダウンシグナルを受信しました")
         shutdown_event.set()
     
-    # シグナルハンドラーの登録
+    # シグナルハンドラーの登録（WindowsとUnixで異なる実装）
     import signal
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
+    import platform
     
-    try:
-        # クライアント開始
-        await mcp_client.start_client(shutdown_event)
-    finally:
-        # シグナルハンドラーの解除
+    if platform.system() == 'Windows':
+        # Windows環境ではsignal.signal()を使用
+        def windows_signal_handler(signum, frame):
+            logger.info("シャットダウンシグナルを受信しました")
+            shutdown_event.set()
+        
+        signal.signal(signal.SIGINT, windows_signal_handler)
+        signal.signal(signal.SIGTERM, windows_signal_handler)
+        
+        try:
+            # クライアント開始
+            await mcp_client.start_client(shutdown_event)
+        finally:
+            # シグナルハンドラーをデフォルトに戻す
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    else:
+        # Unix系環境ではloop.add_signal_handler()を使用
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.remove_signal_handler(sig)
+            loop.add_signal_handler(sig, signal_handler)
+        
+        try:
+            # クライアント開始
+            await mcp_client.start_client(shutdown_event)
+        finally:
+            # シグナルハンドラーの解除
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.remove_signal_handler(sig)
 
 
 def run_microphone_mode(config, model, device_id=None):
