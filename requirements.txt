@@ -1,0 +1,49 @@
+# MenZ-Whisper 依存関係
+# OpenAI Whisperベースの音声認識システム
+
+# ============================================
+# 必須パッケージ
+# ============================================
+
+# NumPy（音声処理に必須）
+numpy>=1.24.0
+
+# 深層学習フレームワーク
+# PyTorch（CUDA/MPS/CPU自動対応）
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Whisper音声認識（いずれか1つ、または両方）
+# オプション1: OpenAI Whisper（標準版）
+openai-whisper>=20231117
+
+# オプション2: faster-whisper（高速版・推奨）
+faster-whisper>=1.0.0
+
+# VAD（音声区間検出）
+silero-vad>=4.0.0
+
+# 音声処理ライブラリ
+soundfile>=0.12.0
+librosa>=0.10.0
+sounddevice>=0.4.6  # マイク入力（リアルタイム音声認識）
+
+# WebSocket通信（zagaroid連携）
+websockets>=12.0
+
+# ============================================
+# オプションパッケージ
+# ============================================
+
+# GPU加速（CUDA）
+# CUDA 11.8の場合:
+# torch==2.1.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+# torchaudio==2.1.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+
+# GPU加速（ROCm - AMD）
+# torch==2.1.0+rocm5.7 --index-url https://download.pytorch.org/whl/rocm5.7
+# torchaudio==2.1.0+rocm5.7 --index-url https://download.pytorch.org/whl/rocm5.7
+
+# ユーティリティ
+tqdm>=4.65.0
+
