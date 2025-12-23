@@ -9,3 +9,4 @@ fi
 # チェックスクリプトを実行
 python3 check_gpu.py
 
+

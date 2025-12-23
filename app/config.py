@@ -102,7 +102,7 @@ class WhisperConfig:
         
         # [filtering]
         self.config['filtering'] = {
-            'min_length': '1',
+            'min_length': '2',
             'exclude_whitespace_only': 'true'
         }
         
