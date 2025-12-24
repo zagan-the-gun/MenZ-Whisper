@@ -33,7 +33,8 @@ class WhisperConfig:
         """デフォルト設定値を設定"""
         # [mode]
         self.config['mode'] = {
-            'mode': 'network'
+            'enable_network': 'true',
+            'enable_microphone': 'false'
         }
         
         # [microphone]
@@ -111,6 +112,11 @@ class WhisperConfig:
             'show_debug': 'true',
             'show_transcription': 'true'
         }
+        
+        # [queue]
+        self.config['queue'] = {
+            'max_size': '100'
+        }
     
     @classmethod
     def from_ini(cls, config_path: str) -> 'WhisperConfig':
@@ -127,8 +133,12 @@ class WhisperConfig:
     
     # Mode settings
     @property
-    def mode(self) -> str:
-        return self.config.get('mode', 'mode')
+    def enable_network(self) -> bool:
+        return self.config.getboolean('mode', 'enable_network')
+    
+    @property
+    def enable_microphone(self) -> bool:
+        return self.config.getboolean('mode', 'enable_microphone')
     
     # Microphone settings
     @property
@@ -289,6 +299,11 @@ class WhisperConfig:
     @property
     def show_transcription(self) -> bool:
         return self.config.getboolean('debug', 'show_transcription')
+    
+    # Queue settings
+    @property
+    def queue_max_size(self) -> int:
+        return self.config.getint('queue', 'max_size')
     
     def save(self, config_path: Optional[str] = None):
         """

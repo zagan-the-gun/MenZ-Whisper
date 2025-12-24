@@ -19,7 +19,7 @@ from .jsonrpc_handler import JSONRPCHandler
 class MCPClient:
     """MCPクライアントクラス（双方向通信対応）"""
     
-    def __init__(self, config: WhisperConfig, model, jsonrpc_handler: JSONRPCHandler):
+    def __init__(self, config: WhisperConfig, model, jsonrpc_handler: JSONRPCHandler, recognition_queue=None):
         """
         MCPクライアントの初期化
         
@@ -27,10 +27,12 @@ class MCPClient:
             config: 設定オブジェクト
             model: Whisperモデル
             jsonrpc_handler: JSON-RPCハンドラー
+            recognition_queue: 音声認識キュー（優先度付き）
         """
         self.config = config
         self.model = model
         self.jsonrpc_handler = jsonrpc_handler
+        self.recognition_queue = recognition_queue
         self.logger = logging.getLogger(__name__)
         
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
@@ -195,14 +197,72 @@ class MCPClient:
         self.logger.info(f"JSON-RPCリクエスト受信: method={method}")
         self.stats['total_requests'] += 1
         
-        # ハンドラーで処理（通知が返る）
-        notification = await self.jsonrpc_handler.handle_request(data)
+        # 音声認識リクエストの場合はキューに追加
+        if method == 'recognize_audio' and self.recognition_queue:
+            await self._enqueue_recognition_request(data)
+        else:
+            # その他のリクエストは従来通り処理
+            notification = await self.jsonrpc_handler.handle_request(data)
+            
+            # 通知を送信
+            if notification:
+                await websocket.send(json.dumps(notification, ensure_ascii=False))
+                self.stats['total_notifications'] += 1
+                self.logger.debug(f"通知送信完了: method={notification.get('method')}")
+    
+    async def _enqueue_recognition_request(self, request: dict):
+        """音声認識リクエストをキューに追加
         
-        # 通知を送信
-        if notification:
-            await websocket.send(json.dumps(notification, ensure_ascii=False))
-            self.stats['total_notifications'] += 1
-            self.logger.debug(f"通知送信完了: method={notification.get('method')}")
+        Args:
+            request: JSON-RPC 2.0リクエスト
+        """
+        import time
+        import base64
+        import numpy as np
+        
+        params = request.get('params', {})
+        
+        # 必須パラメータの検証
+        if 'speaker' not in params or 'audio_data' not in params:
+            self.logger.warning("必須パラメータが不足しています")
+            return
+        
+        try:
+            speaker = params['speaker']
+            audio_data_b64 = params['audio_data']
+            sample_rate = params.get('sample_rate', 16000)
+            
+            # Base64デコード → PCM16LE → float32
+            pcm_bytes = base64.b64decode(audio_data_b64)
+            pcm16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+            audio_f32 = pcm16.astype(np.float32) / 32767.0
+            
+            duration = len(audio_f32) / sample_rate
+            
+            # 短すぎる音声を無視
+            if duration < 0.5:
+                self.logger.info(f"音声が短すぎるためスキップ: speaker={speaker}, duration={duration:.2f}s")
+                return
+            
+            # キューに追加（優先度: 1=ネットワーク）
+            priority = 1  # PRIORITY_NETWORK
+            timestamp = time.time()
+            request_data = {
+                'speaker': speaker,
+                'audio_data': audio_f32
+            }
+            
+            # キューが満杯の場合の処理
+            if self.recognition_queue.full():
+                self.logger.warning(f"キューが満杯です。リクエストを破棄します: speaker={speaker}")
+                return
+            
+            await self.recognition_queue.put((priority, timestamp, request_data))
+            queue_size = self.recognition_queue.qsize()
+            self.logger.info(f"キューに追加: speaker={speaker}, duration={duration:.2f}s, キュー={queue_size}")
+            
+        except Exception as e:
+            self.logger.error(f"キュー追加エラー: {e}", exc_info=True)
     
     def stop_client(self):
         """クライアント停止"""

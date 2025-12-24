@@ -9,6 +9,7 @@ import time
 import queue
 import collections
 import logging
+import asyncio
 from typing import Optional, Callable, List
 import sys
 
@@ -16,16 +17,18 @@ import sys
 class RealtimeTranscriber:
     """リアルタイム音声認識クラス"""
     
-    def __init__(self, config, model, show_level: bool = False):
+    def __init__(self, config, model, show_level: bool = False, recognition_queue=None):
         """
         Args:
             config: WhisperConfig設定オブジェクト
             model: Whisperモデル
             show_level: 音声レベル表示の有効/無効
+            recognition_queue: 音声認識キュー（優先度付き）
         """
         self.config = config
         self.model = model
         self.show_level = show_level
+        self.recognition_queue = recognition_queue
         self.logger = logging.getLogger(__name__)
         
         # 音声入力設定
@@ -70,6 +73,9 @@ class RealtimeTranscriber:
         
         # sounddeviceの遅延インポート
         self.sd = None
+        
+        # 停止イベント（非同期実行用）
+        self.stop_event = None
         
     def _get_sounddevice(self):
         """sounddeviceの遅延インポート"""
@@ -194,7 +200,7 @@ class RealtimeTranscriber:
         self.logger.info("音声処理スレッドを終了しました")
     
     def _recognize_audio(self):
-        """音声認識を実行"""
+        """音声認識リクエストをキューに追加"""
         if len(self.audio_buffer) < self.rate * self.config.phrase_threshold:
             self.logger.debug("音声が短すぎるためスキップ")
             return
@@ -212,85 +218,51 @@ class RealtimeTranscriber:
             if self.show_level:
                 print()  # 改行
             
-            self.logger.info(f"音声認識中... ({len(audio_data)/self.rate:.1f}秒)")
-            start_time = time.time()
+            duration = len(audio_data) / self.rate
+            self.logger.info(f"マイク音声検出 ({duration:.1f}秒)")
             
-            # 音声認識実行
-            result = self.model.transcribe_audio_segment(audio_data)
-            
-            elapsed = time.time() - start_time
-            
-            if result and result.strip():
-                # フィルタリング
-                if len(result) < self.config.min_length:
-                    self.logger.debug(f"最小文字数未満のためスキップ: {result}")
-                    return
+            # キューに追加
+            if self.recognition_queue:
+                # 非同期でキューに追加（同期コンテキストから）
+                import time
+                priority = 0  # PRIORITY_MICROPHONE（最優先）
+                timestamp = time.time()
+                request_data = {
+                    'speaker': self.config.microphone_speaker,
+                    'audio_data': audio_data
+                }
                 
-                if self.config.exclude_whitespace_only and not result.strip():
-                    return
-                
-                # 結果表示（話者名付き）
-                speaker_info = f"[{self.config.microphone_speaker}]" if self.config.microphone_speaker else ""
-                print(f"\n🎤 認識結果 {speaker_info} ({elapsed:.2f}秒): {result}")
-                
-                # WebSocket送信（オプション）
-                if self.config.microphone_send_to_websocket:
-                    self._send_to_websocket(result)
-                    
+                # asyncio.run()ではなく、キューに直接追加
+                # （スレッドセーフな方法で追加）
+                try:
+                    self.recognition_queue.put_nowait((priority, timestamp, request_data))
+                    queue_size = self.recognition_queue.qsize()
+                    self.logger.info(f"キューに追加: speaker={self.config.microphone_speaker}, "
+                                   f"duration={duration:.1f}秒, キュー={queue_size}")
+                except asyncio.QueueFull:
+                    self.logger.warning("キューが満杯です。マイク入力を破棄します")
             else:
-                self.logger.debug("認識結果なし")
+                # キューがない場合は従来通り処理（後方互換性）
+                self.logger.warning("キューが設定されていません。認識をスキップします")
                 
         except Exception as e:
-            self.logger.error(f"音声認識エラー: {e}", exc_info=True)
+            self.logger.error(f"キュー追加エラー: {e}", exc_info=True)
     
-    def _send_to_websocket(self, text: str):
-        """WebSocketで結果を送信"""
-        try:
-            import asyncio
-            import websockets
-            import json
-            
-            async def send():
-                uri = f"ws://{self.config.websocket_host}:{self.config.websocket_port}/"
-                async with websockets.connect(uri) as websocket:
-                    notification = {
-                        "jsonrpc": "2.0",
-                        "method": "notifications/subtitle",
-                        "params": {
-                            "text": text,
-                            "speaker": self.config.microphone_speaker,
-                            "type": "subtitle",
-                            "language": "ja"
-                        }
-                    }
-                    await websocket.send(json.dumps(notification, ensure_ascii=False))
-                    self.logger.debug(f"WebSocketに送信: speaker={self.config.microphone_speaker}, text={text}")
-            
-            # 新しいイベントループで実行
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(send())
-            loop.close()
-            
-        except Exception as e:
-            self.logger.error(f"WebSocket送信エラー: {e}")
     
-    def start(self, device_id: Optional[int] = None):
-        """音声認識を開始"""
+    async def start_async(self, device_id: int, stop_event: Optional[asyncio.Event] = None):
+        """音声認識を開始
+        
+        Args:
+            device_id: マイクデバイスID（必須）
+            stop_event: 停止イベント（Noneの場合は内部で作成）
+        """
         sd = self._get_sounddevice()
         
-        # デバイスID の処理
-        if device_id is None:
-            device_str = self.config.microphone_device_id
-            if device_str == 'auto':
-                device_id = self.select_microphone()
-                if device_id is None:
-                    return
-            else:
-                try:
-                    device_id = int(device_str)
-                except ValueError:
-                    device_id = 0
+        # 停止イベントの設定
+        if stop_event is None:
+            self.stop_event = asyncio.Event()
+        else:
+            self.stop_event = stop_event
         
         self.logger.info(f"マイクデバイス: {device_id}")
         
@@ -309,7 +281,6 @@ class RealtimeTranscriber:
             print("\n" + "="*60)
             print("🎤 リアルタイム音声認識を開始します")
             print("="*60)
-            print("Ctrl+C で終了")
             print()
             
             with sd.InputStream(
@@ -319,11 +290,10 @@ class RealtimeTranscriber:
                 blocksize=self.chunk_size,
                 callback=self._audio_callback
             ):
-                while self.is_recording:
-                    time.sleep(0.1)
+                # 停止イベントを待機
+                while self.is_recording and not self.stop_event.is_set():
+                    await asyncio.sleep(0.1)
                     
-        except KeyboardInterrupt:
-            print("\n\n音声認識を終了します...")
         except Exception as e:
             self.logger.error(f"音声入力エラー: {e}", exc_info=True)
         finally:

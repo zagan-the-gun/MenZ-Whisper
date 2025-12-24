@@ -9,9 +9,10 @@ OpenAI Whisperモデルを使用した高精度音声認識サービスを提供
 **主な特徴:**
 
 * OpenAI Whisper / Faster-Whisper モデルによる高精度音声認識
-* **2つの動作モード**:
+* **2つの動作モード（同時実行可能）**:
   - **ネットワークモード**: zagaroidサーバーに接続して音声認識リクエストを処理
   - **マイクモード**: マイクからの音声をリアルタイムで認識
+  - **両方同時**: マイク入力とネットワーク依頼を同時に処理可能
 * **JSON-RPC 2.0対応**（MCP準拠）
 * 多言語対応（日本語に最適化）
 * GPU/MPS/CPU 自動選択対応
@@ -96,8 +97,11 @@ python -m app.main
 
 ```ini
 [mode]
-# 動作モード: network（zagaroid連携）, microphone（マイク入力）
-mode = network
+# 動作モード（両方ともtrueにすることで同時実行可能）
+# enable_network: ネットワーク経由のSTT依頼（zagaroid連携）
+# enable_microphone: マイクからの直接入力（リアルタイム音声認識）
+enable_network = true
+enable_microphone = false
 
 [microphone]
 # マイク入力設定（mode=microphoneの時のみ有効）
@@ -168,8 +172,9 @@ show_transcription = true
 `config.ini`:
 ```ini
 [mode]
-# 動作モード: network（zagaroid連携）, microphone（マイク入力）
-mode = network
+# 動作モード（両方ともtrueで同時実行可能）
+enable_network = true     # ネットワーク経由のSTT依頼を処理
+enable_microphone = false # マイクからの音声を認識
 
 # ネットワークモードの場合
 [websocket]
@@ -185,6 +190,13 @@ show_level = true
 [model]
 model_size = base
 use_faster_whisper = true
+```
+
+**同時実行の例:**
+```ini
+[mode]
+enable_network = true     # zagaroidからの音声認識依頼を処理
+enable_microphone = true  # 自分のマイクからも音声入力
 ```
 
 2. **起動**
@@ -275,6 +287,13 @@ check_gpu.bat   # Windows
 
 zagaroidサーバーに接続し、JSON-RPC 2.0形式の音声認識リクエストを処理します。
 
+**設定:**
+```ini
+[mode]
+enable_network = true
+enable_microphone = false
+```
+
 **用途:**
 - zagaroidとの連携
 - DiscordやTwitchからの音声認識
@@ -285,6 +304,13 @@ zagaroidサーバーに接続し、JSON-RPC 2.0形式の音声認識リクエス
 ### マイクモード
 
 マイクからの音声をリアルタイムで認識します。
+
+**設定:**
+```ini
+[mode]
+enable_network = false
+enable_microphone = true
+```
 
 **用途:**
 - ローカルでの音声認識
@@ -303,6 +329,30 @@ zagaroidサーバーに接続し、JSON-RPC 2.0形式の音声認識リクエス
 - リアルタイム音声レベル表示
 - 認識結果のコンソール出力（話者名付き）
 - オプション: WebSocketでzagaroidに送信
+
+### 同時実行モード（新機能）
+
+**ネットワークモードとマイクモードを同時に実行**できます。
+
+**設定:**
+```ini
+[mode]
+enable_network = true
+enable_microphone = true
+```
+
+**用途:**
+- マイクから自分の音声を入力しつつ、Discord/Twitchからの音声もリアルタイムで認識
+- ローカルマイクとリモート音声の同時処理
+- 配信者が自分の声とリスナーの声を同時に認識
+
+**動作:**
+- マイクからの音声: 設定した話者名で認識
+- ネットワークからの依頼: リクエストごとに話者名を指定
+- 両方の音声を並行処理（互いに影響しません）
+- 同じWhisperモデルを共有して効率的に処理
+
+**起動:** `python -m app.main` または `./run.sh`
 
 ## JSON-RPC 2.0プロトコル（ネットワークモード）
 
