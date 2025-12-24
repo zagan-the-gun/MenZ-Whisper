@@ -201,7 +201,7 @@ class MCPClient:
         if method == 'recognize_audio' and self.recognition_queue:
             await self._enqueue_recognition_request(data)
         else:
-            # その他のリクエストは従来通り処理
+            # その他のリクエスト（recognize_audio以外）を処理
             notification = await self.jsonrpc_handler.handle_request(data)
             
             # 通知を送信
@@ -241,7 +241,7 @@ class MCPClient:
             
             # 短すぎる音声を無視
             if duration < 0.5:
-                self.logger.info(f"音声が短すぎるためスキップ: speaker={speaker}, duration={duration:.2f}s")
+                self.logger.info(f"音声が短すぎるためキュー追加をスキップ: speaker={speaker}, duration={duration:.2f}s")
                 return
             
             # キューに追加（優先度: 1=ネットワーク）

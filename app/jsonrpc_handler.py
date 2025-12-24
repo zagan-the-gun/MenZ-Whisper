@@ -110,6 +110,7 @@ class JSONRPCHandler:
         # 処理時間計測開始
         import time
         start_time = time.time()
+        processed_result = ""  # デフォルトは空文字列
         
         try:
             # Base64デコード
@@ -124,53 +125,42 @@ class JSONRPCHandler:
             
             # 短すぎる音声を無視（ハルシネーション対策）
             if duration < 0.5:
-                self.logger.info(f"音声が短すぎるためスキップ: speaker={speaker}, duration={duration:.2f}s")
-                return None
-            
-            # 音声認識実行
-            result = self.model.transcribe_audio_segment(audio_f32)
-            
-            if not result or not result.strip():
-                self.logger.info(f"認識結果なし: speaker={speaker}")
-                return None
-            
-            # 文章整形
-            processed_result = result.strip()
-            
-            # フィルタリング設定の適用
-            if self.config.exclude_whitespace_only and not processed_result:
-                return None
-            
-            if len(processed_result) < self.config.min_length:
-                self.logger.debug(f"最小文字数未満のためスキップ: {processed_result}")
-                return None
-            
-            # 文章途中の「。」を「、」に変換（末尾以外）
-            if len(processed_result) > 1:
-                processed_result = processed_result[:-1].replace('。', '、') + processed_result[-1]
-            # 末尾の句読点を削除
-            processed_result = processed_result.rstrip('。')
-            
-            # 処理時間計測
-            elapsed_time = time.time() - start_time
-            
-            self.logger.info(f"認識成功: speaker={speaker}, text={processed_result}, 処理時間={elapsed_time:.2f}秒")
-            
-            # 通知メッセージを構築
-            notification = {
-                "jsonrpc": "2.0",
-                "method": "notifications/subtitle",
-                "params": {
-                    "text": processed_result,
-                    "speaker": speaker,
-                    "type": "subtitle",
-                    "language": "ja"
-                }
-            }
-            
-            return notification
+                self.logger.info(f"音声が短すぎるため空文字列として送信: speaker={speaker}, duration={duration:.2f}s")
+            else:
+                # 音声認識実行
+                result = self.model.transcribe_audio_segment(audio_f32)
+                
+                if not result or not result.strip():
+                    self.logger.info(f"認識結果なし（空文字列を返す）: speaker={speaker}")
+                else:
+                    # 文章整形（フィルタリングは呼び出し側で行う）
+                    processed_result = result.strip()
+                    
+                    # 文章途中の「。」を「、」に変換（末尾以外）
+                    if len(processed_result) > 1:
+                        processed_result = processed_result[:-1].replace('。', '、') + processed_result[-1]
+                    # 末尾の句読点を削除
+                    processed_result = processed_result.rstrip('。')
+                    
+                    # 処理時間計測
+                    elapsed_time = time.time() - start_time
+                    self.logger.info(f"認識成功: speaker={speaker}, text={processed_result}, 処理時間={elapsed_time:.2f}秒")
             
         except Exception as e:
-            self.logger.error(f"音声認識エラー: {e}", exc_info=True)
-            raise
+            self.logger.error(f"音声認識エラー（空文字列として送信）: {e}", exc_info=True)
+            processed_result = ""
+        
+        # 常に通知メッセージを構築（空文字列も含む）
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "notifications/subtitle",
+            "params": {
+                "text": processed_result,
+                "speaker": speaker,
+                "type": "subtitle",
+                "language": "ja"
+            }
+        }
+        
+        return notification
 

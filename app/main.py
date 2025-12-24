@@ -19,6 +19,7 @@ from app.model import WhisperModel
 from app.mcp_client import MCPClient
 from app.jsonrpc_handler import JSONRPCHandler
 from app.realtime import RealtimeTranscriber
+from app.utils import filter_text
 import json
 import time
 import numpy as np
@@ -27,7 +28,7 @@ import numpy as np
 # ログ設定
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s %(name)s: %(message)s'
+    format='[%(asctime)s] %(levelname)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-async def recognition_worker(queue, model, config, websocket, shutdown_event):
+async def recognition_worker(queue, model, config, mcp_client, shutdown_event):
     """音声認識ワーカー
     
     優先度付きキューから音声認識リクエストを取り出して処理します。
@@ -79,7 +80,7 @@ async def recognition_worker(queue, model, config, websocket, shutdown_event):
         queue: 優先度付きキュー
         model: Whisperモデル
         config: 設定オブジェクト
-        websocket: WebSocket接続（結果送信用）
+        mcp_client: MCPクライアント（WebSocket接続を動的に取得）
         shutdown_event: 停止イベント
     """
     logger.info("音声認識ワーカーを開始しました")
@@ -97,13 +98,15 @@ async def recognition_worker(queue, model, config, websocket, shutdown_event):
             
             speaker = request_data['speaker']
             audio_data = request_data['audio_data']
-            priority_name = "マイク" if priority == PRIORITY_MICROPHONE else "ネットワーク"
+            source = "mic" if priority == PRIORITY_MICROPHONE else "network"
             
             # キューの待ち時間を計算
             wait_time = time.time() - timestamp
             queue_size = queue.qsize()
             
-            logger.info(f"[{priority_name}] 音声認識開始: speaker={speaker}, "
+            # 音声レベル表示との分離のため改行
+            print()
+            logger.info(f"音声認識開始: speaker={speaker}, source={source}, "
                        f"待ち時間={wait_time:.2f}秒, キュー残={queue_size}")
             
             try:
@@ -111,50 +114,78 @@ async def recognition_worker(queue, model, config, websocket, shutdown_event):
                 start_time = time.time()
                 result = model.transcribe_audio_segment(audio_data)
                 elapsed = time.time() - start_time
+                processed_result = ""  # デフォルトは空文字列
                 
                 if result and result.strip():
-                    # フィルタリング
+                    # 文章整形
                     processed_result = result.strip()
                     
-                    if config.exclude_whitespace_only and not processed_result:
-                        logger.debug(f"空白のみのためスキップ: speaker={speaker}")
-                    elif len(processed_result) < config.min_length:
-                        logger.debug(f"最小文字数未満のためスキップ: {processed_result}")
+                    # 文章途中の「。」を「、」に変換（末尾以外）
+                    if len(processed_result) > 1:
+                        processed_result = processed_result[:-1].replace('。', '、') + processed_result[-1]
+                    # 末尾の句読点を削除
+                    processed_result = processed_result.rstrip('。')
+                    
+                    # フィルタリング（共通関数を使用）
+                    filtered_result = filter_text(
+                        processed_result,
+                        min_length=config.min_length,
+                        exclude_whitespace_only=config.exclude_whitespace_only
+                    )
+                    
+                    # フィルタリング結果のログ出力（マイク・ネットワーク共通）
+                    # 音声レベル表示との分離のため改行
+                    print()
+                    if filtered_result == "":
+                        logger.info(f"フィルタリングにより除外（空文字列として送信）: text='{processed_result}', speaker={speaker}, source={source}, 処理時間={elapsed:.2f}秒")
                     else:
-                        # 文章途中の「。」を「、」に変換（末尾以外）
-                        if len(processed_result) > 1:
-                            processed_result = processed_result[:-1].replace('。', '、') + processed_result[-1]
-                        # 末尾の句読点を削除
-                        processed_result = processed_result.rstrip('。')
-                        
-                        logger.info(f"[{priority_name}] 認識成功: speaker={speaker}, "
-                                   f"text={processed_result}, 処理時間={elapsed:.2f}秒")
-                        
-                        # WebSocketで結果を送信
-                        if websocket:
-                            try:
-                                notification = {
-                                    "jsonrpc": "2.0",
-                                    "method": "notifications/subtitle",
-                                    "params": {
-                                        "text": processed_result,
-                                        "speaker": speaker,
-                                        "type": "subtitle",
-                                        "language": "ja"
-                                    }
-                                }
-                                await websocket.send(json.dumps(notification, ensure_ascii=False))
-                            except Exception as send_error:
-                                logger.error(f"WebSocket送信エラー: {send_error}")
-                        
-                        # マイクモードの場合はコンソールにも表示
-                        if priority == PRIORITY_MICROPHONE:
-                            print(f"\n🎤 認識結果 [{speaker}] ({elapsed:.2f}秒): {processed_result}")
+                        logger.info(f"認識成功: text={filtered_result}, speaker={speaker}, source={source}, 処理時間={elapsed:.2f}秒")
+                    
+                    processed_result = filtered_result
                 else:
-                    logger.debug(f"認識結果なし: speaker={speaker}")
+                    # 音声レベル表示との分離のため改行
+                    print()
+                    logger.info(f"認識結果なし（空文字列として送信）: speaker={speaker}, source={source}")
+                
+                # 常にWebSocketで結果を送信（空文字列も含む）
+                websocket = mcp_client.websocket if mcp_client else None
+                if websocket:
+                    try:
+                        notification = {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/subtitle",
+                            "params": {
+                                "text": processed_result,
+                                "speaker": speaker,
+                                "type": "subtitle",
+                                "language": "ja"
+                            }
+                        }
+                        await websocket.send(json.dumps(notification, ensure_ascii=False))
+                    except Exception as send_error:
+                        logger.error(f"WebSocket送信エラー: {send_error}")
                     
             except Exception as e:
-                logger.error(f"音声認識エラー: speaker={speaker}, error={e}", exc_info=True)
+                # 音声レベル表示との分離のため改行
+                print()
+                logger.error(f"音声認識エラー（空文字列として送信）: speaker={speaker}, error={e}", exc_info=True)
+                # エラー時も空文字列を送信
+                websocket = mcp_client.websocket if mcp_client else None
+                if websocket:
+                    try:
+                        notification = {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/subtitle",
+                            "params": {
+                                "text": "",
+                                "speaker": speaker,
+                                "type": "subtitle",
+                                "language": "ja"
+                            }
+                        }
+                        await websocket.send(json.dumps(notification, ensure_ascii=False))
+                    except Exception as send_error:
+                        logger.error(f"WebSocket送信エラー: {send_error}")
             finally:
                 queue.task_done()
                 
@@ -392,24 +423,17 @@ async def main():
                     jsonrpc_handler = JSONRPCHandler(model, config)
                     mcp_client = MCPClient(config, model, jsonrpc_handler, recognition_queue)
                     
-                    # WebSocket接続が確立されるまで待機するためのタスクを作成
-                    async def wait_for_websocket_and_start_worker():
-                        # MCPクライアントが接続を確立するまで少し待つ
-                        await asyncio.sleep(2)
-                        
-                        # WebSocket接続を取得
-                        websocket = mcp_client.websocket
-                        if websocket:
-                            logger.info("ワーカーを開始します")
-                            await recognition_worker(recognition_queue, model, config, websocket, shutdown_event)
-                        else:
-                            logger.warning("WebSocket接続がありません。ワーカーを開始できません")
+                    # ワーカーを即座に起動（WebSocket接続を待たない）
+                    # WebSocketはmcp_client.websocketを動的に参照するので、接続後は自動的に使える
+                    async def start_worker():
+                        logger.info("音声認識ワーカーを起動します")
+                        await recognition_worker(recognition_queue, model, config, mcp_client, shutdown_event)
                     
                     # すべてを並行実行
                     await asyncio.gather(
                         mcp_client.start_client(shutdown_event),
                         run_microphone_mode_async(config, model, mic_device_id, shutdown_event=shutdown_event, recognition_queue=recognition_queue),
-                        wait_for_websocket_and_start_worker()
+                        start_worker()
                     )
                 finally:
                     # シグナルハンドラーの解除
@@ -458,17 +482,14 @@ async def main():
                     jsonrpc_handler = JSONRPCHandler(model, config)
                     mcp_client = MCPClient(config, model, jsonrpc_handler, recognition_queue)
                     
-                    # WebSocket接続確立後にワーカーを開始
-                    async def wait_for_websocket_and_start_worker():
-                        await asyncio.sleep(2)
-                        websocket = mcp_client.websocket
-                        if websocket:
-                            logger.info("ワーカーを開始します")
-                            await recognition_worker(recognition_queue, model, config, websocket, shutdown_event)
+                    # ワーカーを即座に起動（WebSocket接続を待たない）
+                    async def start_worker():
+                        logger.info("音声認識ワーカーを起動します")
+                        await recognition_worker(recognition_queue, model, config, mcp_client, shutdown_event)
                     
                     await asyncio.gather(
                         mcp_client.start_client(shutdown_event),
-                        wait_for_websocket_and_start_worker()
+                        start_worker()
                     )
                 finally:
                     if platform.system() == 'Windows':
@@ -525,7 +546,7 @@ async def main():
                     
                     await asyncio.gather(
                         run_microphone_mode_async(config, model, mic_device_id, shutdown_event=shutdown_event, recognition_queue=recognition_queue),
-                        recognition_worker(recognition_queue, model, config, websocket, shutdown_event)
+                        recognition_worker(recognition_queue, model, config, None, shutdown_event)
                     )
                 finally:
                     # WebSocket切断
