@@ -88,10 +88,22 @@ class RealtimeTranscriber:
         """利用可能なマイクデバイスをリスト"""
         sd = self._get_sounddevice()
         devices = sd.query_devices()
-        
+        hostapis = sd.query_hostapis()
+
+        # Windowsでは複数のオーディオホストAPI（MME/DirectSound/WASAPI/WDM-KS）
+        # 経由で同じ物理デバイスが重複して列挙されるため、WASAPIのみに絞り込む
+        preferred_hostapi_index = None
+        if sys.platform == 'win32':
+            for idx, api in enumerate(hostapis):
+                if 'WASAPI' in api['name']:
+                    preferred_hostapi_index = idx
+                    break
+
         microphones = []
         for i, device in enumerate(devices):
             if device['max_input_channels'] > 0:
+                if preferred_hostapi_index is not None and device['hostapi'] != preferred_hostapi_index:
+                    continue
                 microphones.append({
                     'id': i,
                     'name': device['name'],
