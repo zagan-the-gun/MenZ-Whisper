@@ -34,7 +34,10 @@ class RealtimeTranscriber:
         # 音声入力設定
         self.chunk_size = self.config.chunk_size
         self.channels = 1
+        # 処理用サンプリングレート（VAD/Whisperに渡すレート、16000Hz固定推奨）
         self.rate = self.config.sample_rate
+        # デバイス取り込みレート（start_asyncでデバイスのネイティブレートを自動検出）
+        self.device_rate = self.rate
         
         # 状態管理
         self.is_recording = False
@@ -148,8 +151,20 @@ class RealtimeTranscriber:
         # モノラルに変換
         audio_data = indata[:, 0] if indata.ndim > 1 else indata
         
-        # キューに追加
-        self.audio_queue.put(audio_data.copy())
+        # デバイスレートと処理レートが異なる場合はリサンプリング
+        # （例: 48000Hz取り込み → 16000Hz処理）
+        if self.device_rate != self.rate:
+            from scipy.signal import resample_poly
+            import math
+            gcd = math.gcd(self.rate, self.device_rate)
+            audio_data = resample_poly(
+                audio_data.astype(np.float32),
+                up=self.rate // gcd,
+                down=self.device_rate // gcd
+            ).astype(np.float32)
+            self.audio_queue.put(audio_data)
+        else:
+            self.audio_queue.put(audio_data.copy())
     
     def _process_audio(self):
         """音声処理スレッド"""
@@ -281,7 +296,23 @@ class RealtimeTranscriber:
         # デバイス情報表示
         device_info = sd.query_devices(device_id)
         self.logger.info(f"デバイス名: {device_info['name']}")
-        self.logger.info(f"サンプリングレート: {self.rate}Hz")
+        
+        # デバイスのネイティブサンプリングレートで取り込み、処理レートへリサンプリング
+        # （Realtek等、ドライバがネイティブレート以外を受け付けないケースへの対応）
+        try:
+            self.device_rate = int(device_info['default_samplerate'])
+        except (KeyError, TypeError, ValueError):
+            self.device_rate = self.rate
+        
+        if self.device_rate != self.rate:
+            self.logger.info(
+                f"サンプリングレート: {self.device_rate}Hz（取り込み） → {self.rate}Hz（処理用にリサンプリング）"
+            )
+        else:
+            self.logger.info(f"サンプリングレート: {self.rate}Hz")
+        
+        # デバイスレートに合わせてブロックサイズを調整（時間長を一定に保つ）
+        device_blocksize = int(self.chunk_size * self.device_rate / self.rate)
         
         # 音声処理スレッド開始
         self.is_recording = True
@@ -298,8 +329,8 @@ class RealtimeTranscriber:
             with sd.InputStream(
                 device=device_id,
                 channels=self.channels,
-                samplerate=self.rate,
-                blocksize=self.chunk_size,
+                samplerate=self.device_rate,
+                blocksize=device_blocksize,
                 callback=self._audio_callback
             ):
                 # 停止イベントを待機
