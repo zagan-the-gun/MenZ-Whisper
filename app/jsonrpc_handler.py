@@ -5,6 +5,7 @@ zagaroidからのJSON-RPC 2.0リクエストを処理します。
 """
 
 import logging
+import asyncio
 import base64
 import numpy as np
 from typing import Dict, Any, Optional
@@ -128,7 +129,10 @@ class JSONRPCHandler:
                 self.logger.info(f"音声が短すぎるため空文字列として送信: speaker={speaker}, duration={duration:.2f}s")
             else:
                 # 音声認識実行
-                result = self.model.transcribe_audio_segment(audio_f32)
+                # イベントループをブロックしないよう別スレッドで実行（理由は app/main.py の
+                # recognition_worker 内のコメント参照。この経路は recognition_queue 無しの
+                # 単発処理専用なので推論の並行実行は起きない）
+                result = await asyncio.to_thread(self.model.transcribe_audio_segment, audio_f32)
                 
                 if not result or not result.strip():
                     self.logger.info(f"認識結果なし（空文字列を返す）: speaker={speaker}")

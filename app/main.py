@@ -111,8 +111,12 @@ async def recognition_worker(queue, model, config, mcp_client, shutdown_event):
             
             try:
                 # 音声認識実行
+                # 推論は CPU で数秒〜数十秒ブロックするため別スレッドに逃がす。
+                # イベントループ上で同期実行すると WebSocket の ping 応答が止まり、
+                # zagaroid 側のセッション掃除に瞬断と誤判定されて切断→直後の認識結果が
+                # 欠落する事故が実際に発生した（ワーカーは単一なので推論の並行実行は起きない）。
                 start_time = time.time()
-                result = model.transcribe_audio_segment(audio_data)
+                result = await asyncio.to_thread(model.transcribe_audio_segment, audio_data)
                 elapsed = time.time() - start_time
                 processed_result = ""  # デフォルトは空文字列
                 

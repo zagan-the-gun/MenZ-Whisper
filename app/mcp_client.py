@@ -77,14 +77,18 @@ class MCPClient:
                         
                         self.logger.info("✅ zagaroidサーバーに接続しました")
                         
-                        # 接続完了通知を送信
+                        # 接続確認用の挨拶を字幕として送信する。
+                        # config.ini [microphone] speaker の名義で送ることで OBS の {speaker}_subtitle に
+                        # 表示され、MenZ-Whisper → zagaroid → OBS の経路確認テストを兼ねる。
+                        # （旧実装は speaker="whisper" 固定・type="system" だったが、zagaroid の MZP 移行後は
+                        #   未登録話者として破棄されるため、登録済みの speaker 名義・type="subtitle" に変更）
                         connect_msg = {
                             "jsonrpc": "2.0",
                             "method": "notifications/subtitle",
                             "params": {
                                 "text": "MenZ-Whisper接続完了",
-                                "speaker": "whisper",
-                                "type": "system",
+                                "speaker": self.config.microphone_speaker,
+                                "type": "subtitle",
                                 "language": "ja"
                             }
                         }
