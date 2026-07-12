@@ -1,19 +1,34 @@
 """
-MCPクライアントモジュール
+MZP（MenZ Protocol）クライアントモジュール
 
-zagaroidサーバーに接続してJSON-RPC 2.0通信を行います。
-- 送信: 音声認識結果の字幕通知
-- 受信: 音声認識リクエストの処理
+zagaroidサーバーに接続してJSON-RPC 2.0（MZP v1.0）通信を行います。
+ワイヤ仕様の正本は zagaroid/docs/protocol.md。
+- 送信: initialize（接続確立ごと）、音声認識結果の字幕通知 / レスポンス
+- 受信: 音声認識リクエスト（recognize_audio）の処理
+
+（モジュール名 mcp_client は歴史的経緯。旧称 "MCP" は Anthropic の
+ Model Context Protocol とは無関係の独自規約で、現名称は MZP）
 """
 
 import asyncio
 import json
 import logging
 import time
+import uuid
 import websockets
 from typing import Optional
 from .config import WhisperConfig
 from .jsonrpc_handler import JSONRPCHandler
+
+# MZP v1.0（zagaroid/docs/protocol.md § 4.1）
+PROTOCOL_VERSION = "mzp/1.0"
+CLIENT_NAME = "MenZ-Whisper"
+# initialize 応答の待機上限（protocol.md § 6.4）。超過時は再接続からやり直す
+INITIALIZE_TIMEOUT_SECONDS = 10.0
+
+
+class HandshakeError(Exception):
+    """initialize が受理されなかった（エラー応答・タイムアウト）。"""
 
 
 class MCPClient:
@@ -76,7 +91,11 @@ class MCPClient:
                         current_delay = self.reconnect_delay  # 接続成功したら遅延をリセット
                         
                         self.logger.info("✅ zagaroidサーバーに接続しました")
-                        
+
+                        # MZP initialize（接続確立ごとに必須。再接続時も再送する）。
+                        # 失敗時は例外 → 外側の except → バックオフ再接続に乗せる
+                        await self._handshake(websocket)
+
                         # 接続確認用の挨拶を字幕として送信する。
                         # config.ini [microphone] speaker の名義で送ることで OBS の {speaker}_subtitle に
                         # 表示され、MenZ-Whisper → zagaroid → OBS の経路確認テストを兼ねる。
@@ -121,7 +140,11 @@ class MCPClient:
                             
                 except websockets.exceptions.ConnectionClosed:
                     self.logger.warning("zagaroidサーバーとの接続が切断されました")
-                    
+
+                except HandshakeError as e:
+                    self.logger.warning(f"initialize に失敗しました（再接続します）: {e}")
+                    self.stats['reconnect_count'] += 1
+
                 except Exception as e:
                     self.logger.error(f"接続エラー: {e}")
                     self.stats['reconnect_count'] += 1
@@ -165,7 +188,68 @@ class MCPClient:
             raise
         finally:
             self.stop_client()
-    
+
+    def _build_roles(self):
+        """動作モードから MZP roles（protocol.md § 2.1）を組み立てる。
+
+        - enable_network: hub からの recognize_audio を受けて返す → stt-pull
+        - enable_microphone: マイク認識結果をこの接続で自発通知する → stt-push
+          （mic+network 同時実行時、マイク結果は常にこの MZP 接続で送られるため）
+        """
+        roles = []
+        if self.config.enable_network:
+            roles.append("stt-pull")
+        if self.config.enable_microphone:
+            roles.append("stt-push")
+        return roles
+
+    async def _handshake(self, websocket):
+        """接続確立ごとに initialize を送り、応答を検証する（protocol.md § 3.1 / § 4.1）。"""
+        msg_id = str(uuid.uuid4())
+        roles = self._build_roles()
+        payload = {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "method": "initialize",
+            "params": {
+                "protocol": PROTOCOL_VERSION,
+                "name": CLIENT_NAME,
+                "roles": roles,
+                # actors は wipe ロール専用フィールドのため送らない（protocol.md § 4.1）
+            },
+        }
+        await websocket.send(json.dumps(payload, ensure_ascii=False))
+        self.logger.info(f"initialize 送信（roles: {', '.join(roles)}）")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + INITIALIZE_TIMEOUT_SECONDS
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise HandshakeError("initialize 応答がタイムアウトしました")
+            try:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+            except asyncio.TimeoutError:
+                raise HandshakeError("initialize 応答がタイムアウトしました") from None
+
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict) or data.get("jsonrpc") != "2.0":
+                continue
+            # 応答（id 一致・method なし）だけを拾う。ハンドシェイク完了前に届いた
+            # 字幕ブロードキャスト等は取りこぼしてよい（hub の応答は接続直後に返る）
+            if "method" in data or str(data.get("id")) != msg_id:
+                self.logger.debug(f"initialize 応答待ち中の受信を無視: {raw[:80]}")
+                continue
+            error = data.get("error")
+            result = data.get("result") or {}
+            if error is not None or not result.get("ok"):
+                raise HandshakeError(f"initialize が拒否されました: {error or result}")
+            self.logger.info(f"initialize 受理（{result.get('protocol', '?')}）")
+            return
+
     async def _message_loop(self, websocket):
         """メッセージ受信ループ"""
         try:
@@ -203,32 +287,43 @@ class MCPClient:
         
         # 音声認識リクエストの場合はキューに追加
         if method == 'recognize_audio' and self.recognition_queue:
-            await self._enqueue_recognition_request(data)
+            await self._enqueue_recognition_request(websocket, data)
         else:
-            # その他のリクエスト（recognize_audio以外）を処理
-            notification = await self.jsonrpc_handler.handle_request(data)
-            
-            # 通知を送信
-            if notification:
-                await websocket.send(json.dumps(notification, ensure_ascii=False))
+            # その他のリクエスト（キュー無し時の recognize_audio 含む）を処理
+            reply = await self.jsonrpc_handler.handle_request(data)
+
+            # 応答（レスポンスまたは通知）を送信
+            if reply:
+                await websocket.send(json.dumps(reply, ensure_ascii=False))
                 self.stats['total_notifications'] += 1
-                self.logger.debug(f"通知送信完了: method={notification.get('method')}")
+                self.logger.debug(f"応答送信完了: method={reply.get('method')}, id={reply.get('id')}")
     
-    async def _enqueue_recognition_request(self, request: dict):
+    async def _enqueue_recognition_request(self, websocket, request: dict):
         """音声認識リクエストをキューに追加
-        
+
+        MZP v1.0（protocol.md § 4.4）では recognize_audio は id 付きリクエストで届き、
+        結果は同じ id のレスポンスで返す。id 無し（旧 hub のブロードキャスト）で
+        届いた場合は互換のため従来通り notifications/subtitle で返す。
+        キューに乗せない場合（無音・エラー）も、id 付きなら必ず応答を返して
+        hub 側のタイムアウト待ちを発生させない。
+
         Args:
+            websocket: 応答送信用の WebSocket
             request: JSON-RPC 2.0リクエスト
         """
         import time
         import base64
         import numpy as np
-        
+
+        request_id = request.get('id')  # None なら旧ブロードキャスト（互換）
         params = request.get('params', {})
-        
+
         # 必須パラメータの検証
         if 'speaker' not in params or 'audio_data' not in params:
             self.logger.warning("必須パラメータが不足しています")
+            if request_id is not None:
+                await self._send_error_response(websocket, request_id, -32602,
+                                                "required parameter 'speaker' or 'audio_data' is missing")
             return
         
         try:
@@ -243,9 +338,11 @@ class MCPClient:
             
             duration = len(audio_f32) / sample_rate
             
-            # 短すぎる音声を無視
+            # 短すぎる音声を無視（無音等は text:"" の正常レスポンス: protocol.md § 4.4）
             if duration < 0.5:
                 self.logger.info(f"音声が短すぎるためキュー追加をスキップ: speaker={speaker}, duration={duration:.2f}s")
+                if request_id is not None:
+                    await self._send_recognition_response(websocket, request_id, "", speaker)
                 return
             
             # キューに追加（優先度: 1=ネットワーク）
@@ -253,12 +350,15 @@ class MCPClient:
             timestamp = time.time()
             request_data = {
                 'speaker': speaker,
-                'audio_data': audio_f32
+                'audio_data': audio_f32,
+                'request_id': request_id,
             }
             
             # キューが満杯の場合の処理
             if self.recognition_queue.full():
                 self.logger.warning(f"キューが満杯です。リクエストを破棄します: speaker={speaker}")
+                if request_id is not None:
+                    await self._send_error_response(websocket, request_id, -32000, "recognition queue is full")
                 return
             
             await self.recognition_queue.put((priority, timestamp, request_data))
@@ -267,6 +367,29 @@ class MCPClient:
             
         except Exception as e:
             self.logger.error(f"キュー追加エラー: {e}", exc_info=True)
+            if request_id is not None:
+                try:
+                    await self._send_error_response(websocket, request_id, -32000, str(e))
+                except Exception:
+                    pass
+
+    async def _send_recognition_response(self, websocket, request_id, text: str, speaker: str):
+        """recognize_audio の正常レスポンス（protocol.md § 4.4）を送信する。"""
+        response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"text": text, "speaker": speaker, "language": "ja"},
+        }
+        await websocket.send(json.dumps(response, ensure_ascii=False))
+
+    async def _send_error_response(self, websocket, request_id, code: int, message: str):
+        """JSON-RPC エラーレスポンスを送信する。"""
+        response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": code, "message": message},
+        }
+        await websocket.send(json.dumps(response, ensure_ascii=False))
     
     def stop_client(self):
         """クライアント停止"""

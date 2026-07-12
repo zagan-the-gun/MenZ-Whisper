@@ -37,6 +37,31 @@ PRIORITY_MICROPHONE = 0  # マイク入力（最優先）
 PRIORITY_NETWORK = 1     # ネットワーク入力（通常）
 
 
+def _build_result_message(request_id, text: str, speaker: str) -> dict:
+    """認識結果の送信メッセージを組み立てる。
+
+    request_id あり（hub からの id 付き recognize_audio）は同じ id のレスポンス、
+    なし（マイク入力 / 旧 hub のブロードキャスト互換）は notifications/subtitle。
+    zagaroid/docs/protocol.md § 4.3 / § 4.4 参照。
+    """
+    if request_id is not None:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"text": text, "speaker": speaker, "language": "ja"},
+        }
+    return {
+        "jsonrpc": "2.0",
+        "method": "notifications/subtitle",
+        "params": {
+            "text": text,
+            "speaker": speaker,
+            "type": "subtitle",
+            "language": "ja",
+        },
+    }
+
+
 def parse_arguments():
     """コマンドライン引数をパース"""
     parser = argparse.ArgumentParser(
@@ -98,6 +123,10 @@ async def recognition_worker(queue, model, config, mcp_client, shutdown_event):
             
             speaker = request_data['speaker']
             audio_data = request_data['audio_data']
+            # MZP v1.0: id 付き recognize_audio の結果は同じ id のレスポンスで返す
+            # （protocol.md § 4.4）。None はマイク入力または旧 hub のブロードキャストで、
+            # 従来通り notifications/subtitle（stt-push）で送る
+            request_id = request_data.get('request_id')
             source = "mic" if priority == PRIORITY_MICROPHONE else "network"
             
             # キューの待ち時間を計算
@@ -151,21 +180,14 @@ async def recognition_worker(queue, model, config, mcp_client, shutdown_event):
                     print()
                     logger.info(f"認識結果なし（空文字列として送信）: speaker={speaker}, source={source}")
                 
-                # 常にWebSocketで結果を送信（空文字列も含む）
+                # 常にWebSocketで結果を送信（空文字列も含む）。
+                # pull 依頼（request_id あり）の結果はレスポンスのみで、通知を重ねて
+                # 送らない（二重処理防止: protocol.md § 4.4）
                 websocket = mcp_client.websocket if mcp_client else None
                 if websocket:
                     try:
-                        notification = {
-                            "jsonrpc": "2.0",
-                            "method": "notifications/subtitle",
-                            "params": {
-                                "text": processed_result,
-                                "speaker": speaker,
-                                "type": "subtitle",
-                                "language": "ja"
-                            }
-                        }
-                        await websocket.send(json.dumps(notification, ensure_ascii=False))
+                        message = _build_result_message(request_id, processed_result, speaker)
+                        await websocket.send(json.dumps(message, ensure_ascii=False))
                     except Exception as send_error:
                         logger.error(f"WebSocket送信エラー: {send_error}")
                     
@@ -173,21 +195,13 @@ async def recognition_worker(queue, model, config, mcp_client, shutdown_event):
                 # 音声レベル表示との分離のため改行
                 print()
                 logger.error(f"音声認識エラー（空文字列として送信）: speaker={speaker}, error={e}", exc_info=True)
-                # エラー時も空文字列を送信
+                # エラー時も空文字列を送信（id 付きなら正常レスポンスで返し、hub 側の
+                # タイムアウト待ちを発生させない: protocol.md § 4.4）
                 websocket = mcp_client.websocket if mcp_client else None
                 if websocket:
                     try:
-                        notification = {
-                            "jsonrpc": "2.0",
-                            "method": "notifications/subtitle",
-                            "params": {
-                                "text": "",
-                                "speaker": speaker,
-                                "type": "subtitle",
-                                "language": "ja"
-                            }
-                        }
-                        await websocket.send(json.dumps(notification, ensure_ascii=False))
+                        message = _build_result_message(request_id, "", speaker)
+                        await websocket.send(json.dumps(message, ensure_ascii=False))
                     except Exception as send_error:
                         logger.error(f"WebSocket送信エラー: {send_error}")
             finally:

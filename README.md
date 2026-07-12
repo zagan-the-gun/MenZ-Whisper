@@ -4,7 +4,7 @@ OpenAI Whisperベースの音声認識システム（zagaroid連携専用）
 
 ## 概要
 
-OpenAI Whisperモデルを使用した高精度音声認識サービスを提供するMCPクライアントです。zagaroidサーバーに接続し、JSON-RPC 2.0形式の音声認識リクエストを処理します。
+OpenAI Whisperモデルを使用した高精度音声認識サービスを提供するMZP（MenZ Protocol）クライアントです。zagaroidサーバーに接続し、JSON-RPC 2.0形式の音声認識リクエストを処理します。
 
 **主な特徴:**
 
@@ -13,7 +13,7 @@ OpenAI Whisperモデルを使用した高精度音声認識サービスを提供
   - **ネットワークモード**: zagaroidサーバーに接続して音声認識リクエストを処理
   - **マイクモード**: マイクからの音声をリアルタイムで認識
   - **両方同時**: マイク入力とネットワーク依頼を同時に処理可能
-* **JSON-RPC 2.0対応**（MCP準拠）
+* **MZP v1.0対応**（JSON-RPC 2.0ベースの独自規約。仕様の正本は zagaroid/docs/protocol.md。旧称 "MCP" は Anthropic の Model Context Protocol とは無関係）
 * 多言語対応（日本語に最適化）
 * GPU/MPS/CPU 自動選択対応
 * faster-whisper対応（標準版より高速）
@@ -354,14 +354,36 @@ enable_microphone = true
 
 **起動:** `python -m app.main` または `./run.sh`
 
-## JSON-RPC 2.0プロトコル（ネットワークモード）
+## MZP（JSON-RPC 2.0）プロトコル（ネットワークモード）
 
-### 音声認識リクエスト
+ワイヤ仕様の正本は **zagaroid/docs/protocol.md（MZP v1.0）**。ここには主要なやりとりのみ要約する。
 
-**リクエスト:**
+### initialize（接続確立ごとに送信）
+
+接続（再接続含む）のたびに自己紹介を送り、zagaroid のセッション台帳に登録される。roles は動作モードから自動で組み立てる（`enable_network` → `stt-pull`、`enable_microphone` → `stt-push`）。
+
 ```json
 {
   "jsonrpc": "2.0",
+  "id": "<uuid>",
+  "method": "initialize",
+  "params": {
+    "protocol": "mzp/1.0",
+    "name": "MenZ-Whisper",
+    "roles": ["stt-pull", "stt-push"]
+  }
+}
+```
+
+応答 `{"result": {"ok": true, "protocol": "mzp/1.0"}}` を10秒以内に受けられなければ再接続する。
+
+### 音声認識リクエスト（recognize_audio）
+
+**リクエスト（zagaroid → MenZ-Whisper、id 付き）:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "<uuid>",
   "method": "recognize_audio",
   "params": {
     "speaker": "user_001",
@@ -373,21 +395,39 @@ enable_microphone = true
 }
 ```
 
-**レスポンス（通知）:**
+**レスポンス（同一 id。無音・フィルタ除外は `text: ""` の正常レスポンス）:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "<uuid>",
+  "result": {
+    "text": "認識されたテキスト",
+    "speaker": "user_001",
+    "language": "ja"
+  }
+}
+```
+
+> **互換**: 旧 hub のように `id` 無し（通知形式のブロードキャスト）で届いた場合は、従来通り `notifications/subtitle` の通知で結果を返す。
+
+### マイク入力の認識結果（notifications/subtitle）
+
+マイクモード（stt-push）の自発的な認識結果は従来通り通知で送る:
+
 ```json
 {
   "jsonrpc": "2.0",
   "method": "notifications/subtitle",
   "params": {
     "text": "認識されたテキスト",
-    "speaker": "user_001",
+    "speaker": "zagan",
     "type": "subtitle",
     "language": "ja"
   }
 }
 ```
 
-### パラメータ
+### recognize_audio のパラメータ
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|----|----|------|

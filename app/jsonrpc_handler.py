@@ -54,12 +54,14 @@ class JSONRPCHandler:
         """
         method = request.get('method')
         params = request.get('params', {})
+        request_id = request.get('id')
         
         try:
             # メソッドの検証
             if method == 'recognize_audio':
-                # 音声認識は非同期処理なので、通知を返す
-                return await self._handle_recognize_audio(params)
+                # id 付き（MZP v1.0）ならレスポンス、id 無し（旧ブロードキャスト互換）
+                # なら従来通り通知を返す（zagaroid/docs/protocol.md § 4.4）
+                return await self._handle_recognize_audio(request_id, params)
             elif method == 'notifications/subtitle':
                 # 他のAIからの字幕通知は無視（処理不要）
                 self.logger.debug(f"字幕通知を受信（無視）: {params.get('text', '')[:50]}")
@@ -75,11 +77,12 @@ class JSONRPCHandler:
             self.logger.error(f"JSON-RPC処理エラー: {e}", exc_info=True)
             return None
     
-    async def _handle_recognize_audio(self, params: Dict) -> Optional[Dict]:
+    async def _handle_recognize_audio(self, request_id, params: Dict) -> Optional[Dict]:
         """
         recognize_audio メソッドの処理
         
         Args:
+            request_id: JSON-RPC リクエスト id（None なら旧ブロードキャスト互換）
             params: パラメータ
                 - speaker (str): 話者名
                 - audio_data (str): Base64エンコードされたPCM16LE
@@ -88,7 +91,7 @@ class JSONRPCHandler:
                 - format (str): フォーマット（pcm16le）
                 
         Returns:
-            Dict: 通知メッセージ、または認識結果がない場合はNone
+            Dict: id 付きならレスポンス、id 無しなら通知メッセージ
         """
         # 必須パラメータの検証
         if 'speaker' not in params:
@@ -154,7 +157,18 @@ class JSONRPCHandler:
             self.logger.error(f"音声認識エラー（空文字列として送信）: {e}", exc_info=True)
             processed_result = ""
         
-        # 常に通知メッセージを構築（空文字列も含む）
+        # 常に応答メッセージを構築（空文字列も含む）。
+        # id 付き（MZP v1.0）は同じ id のレスポンス、id 無しは旧 hub 互換の通知
+        if request_id is not None:
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "text": processed_result,
+                    "speaker": speaker,
+                    "language": "ja"
+                }
+            }
         notification = {
             "jsonrpc": "2.0",
             "method": "notifications/subtitle",
